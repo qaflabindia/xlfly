@@ -1,0 +1,33 @@
+{
+  "functions": [
+    {
+      "id": "VERSION",
+      "name": "VERSION",
+      "description": "Returns the xlfly add-in version.",
+      "result": { "type": "string", "dimensionality": "scalar" },
+      "parameters": []
+    },
+    {
+      "id": "PY",
+      "name": "PY",
+      "description": "Evaluates Python code. Arguments are available as arg1, arg2, ... and args. The value of the last expression is returned.",
+      "helpUrl": "https://github.com/qaflabindia/xlfly",
+      "result": { "type": "any", "dimensionality": "matrix" },
+      "parameters": [
+        { "name": "code", "description": "Python code.", "type": "string", "dimensionality": "scalar" },
+        { "name": "args", "description": "Values or ranges passed to the code.", "type": "any", "dimensionality": "matrix", "optional": true, "repeating": true }
+      ]
+    },
+    {
+      "id": "CALL",
+      "name": "CALL",
+      "description": "Calls a Python function registered with @xlfly.func in this workbook.",
+      "helpUrl": "https://github.com/qaflabindia/xlfly",
+      "result": { "type": "any", "dimensionality": "matrix" },
+      "parameters": [
+        { "name": "name", "description": "Function name.", "type": "string", "dimensionality": "scalar" },
+        { "name": "args", "description": "Values or ranges passed to the function.", "type": "any", "dimensionality": "matrix", "optional": true, "repeating": true }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1f1f1f;
+  --muted: #616161;
+  --line: #e0e0e0;
+  --accent: #217346;
+  --warn-bg: #fff4ce;
+  --ok-bg: #dff6dd;
+  --code-bg: #f5f5f5;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f1f1f;
+    --fg: #f0f0f0;
+    --muted: #a0a0a0;
+    --line: #3a3a3a;
+    --accent: #4caf7a;
+    --warn-bg: #433519;
+    --ok-bg: #1f3a24;
+    --code-bg: #2a2a2a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif;
+}
+
+main { padding: 12px; display: grid; gap: 14px; }
+
+header { display: flex; align-items: center; gap: 8px; }
+header h1 { font-size: 16px; margin: 0; flex: 1; }
+header small { color: var(--muted); font-weight: normal; }
+
+h2 { font-size: 13px; margin: 0 0 6px; }
+
+#kernel-status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--code-bg);
+}
+#kernel-status[data-state="ready"] { background: var(--ok-bg); }
+#kernel-status[data-state="failed"] { background: var(--warn-bg); }
+
+#trust { padding: 10px; border-radius: 6px; background: var(--warn-bg); }
+#trust[data-trusted="true"] { background: var(--ok-bg); }
+#trust p { margin: 0 0 8px; }
+
+.row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.row h2 { margin: 0; flex: 1; }
+
+textarea {
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace;
+  background: var(--code-bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px;
+  tab-size: 4;
+}
+
+button, select {
+  font: inherit;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; margin-top: 6px; }
+button:disabled { opacity: 0.5; }
+
+ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+li { display: grid; gap: 2px; }
+li span { color: var(--muted); }
+li button { justify-self: start; }
+code { font: 12px ui-monospace, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.hint { color: var(--muted); margin: 0 0 6px; }
+
+#log {
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font: 11px/1.4 ui-monospace, Menlo, Consolas, monospace;
+  background: var(--code-bg);
+  padding: 8px;
+  border-radius: 4px;
+}
