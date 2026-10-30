@@ -169,7 +169,32 @@ Verified in the build environment (Linux, Node 22, headless Chromium):
 - Real Pyodide kernel driven through the host client: functions, context guard, a command that reads, calls an Excel function, writes and charts, stdout, events.
 - Built bundles in Chromium: kernel starts (Python 3.14.2) in about 4.3 s cold; a 1,000-call batch completes in 24 ms; the task pane against a stubbed Office.js runs trust → save → `=XLFLY.PY` → `=XLFLY.CALL` → error mapping.
 
-**Not yet verified [U]:** behaviour inside real Excel; WebKit (the Mac webview); SharedRuntime and module-worker support on the target Excel builds; repeating optional custom-function parameters; whether add-in writes keep Excel's undo history; numpy/pandas/matplotlib load time from self-hosted packages.
+### 10.1 Excel for Mac — first real-Excel run (2026-10-30)
+
+Environment: macOS 26.6.2 on Apple Silicon; Microsoft Excel 16.114.3 (build 16.114.26102720, Microsoft 365, universal binary); Node 25.5.0; CPython 3.13.9 for the Python unit tests.
+
+Dependencies: all nine npm packages resolve to the current registry release (`pyodide` 314.0.7, `typescript` 7.0.2, `esbuild` 0.28.2, `@types/office-js` 1.0.615, `@types/office-runtime` 1.0.40, `@types/custom-functions-runtime` 1.6.13, `@types/node` 26.6.6, `office-addin-dev-certs` 3.0.1, `office-addin-manifest` 3.0.1). `npm audit`: 0 vulnerabilities across 65 packages. `npm run check` passes on macOS (typecheck, 19 JS tests, 14 Python tests, Pyodide kernel integration, build). `npm run fetch:pyodide` fetched 13 wheels (numpy, pandas, matplotlib and dependencies), each matching its lock-file SHA-256.
+
+Verified in Excel for Mac [F, observed]:
+
+| Phase 0 item | Result |
+|---|---|
+| Sideload via the `wef` folder | Pass. The folder did not exist before the first sideload; `sideload-mac.sh` creates it. Excel must be quit and reopened. |
+| Shared runtime, module worker, WebAssembly in WebKit | Pass. The **Python** button appears on the Home tab; the kernel starts and the task pane loads modules. |
+| `=XLFLY.CALL` with a range and a spilled result | Pass. `GROWTH` over `A1:A10` spilled into `D12:D21`. |
+| Trust flow | Pass for **Trust this workbook**; functions return results only after trusting. |
+| Command: read, write, native chart | Pass. `SUMMARY` read `A1:A10`, wrote `C1:C2` and inserted an editable column chart at `E2`. |
+| Kernel restart from the pane | Pass. **Restart** recovered; the log shows the worker closing and reloading modules. |
+| `=XLFLY.CALL` on a command name | Returns `#VALUE!` instead of an error that says the name is a command. Usability gap; see Phase 1. |
+
+Setup findings:
+
+- `office-addin-dev-certs install` needs the user's macOS password; it cannot run unattended.
+- The dev certificate is trusted through the macOS keychain. Tools that use their own CA bundle (for example Anaconda's `curl`) reject `https://localhost:3000` even though Excel accepts it; `/usr/bin/curl` succeeds.
+- Each command run inserts a new chart; the previous one is not replaced (Excel names them Chart 1, Chart 2, …). Chart replacement is Phase 2 work.
+- `npm run validate` fails with "Manifest Version Too Low" because the manifest version is `0.1.0.0`. This blocks AppSource only, not sideloading; raise it to `1.0.0.0` before release.
+
+**Not yet verified [U]:** `=XLFLY.PY` inline evaluation in Excel; matplotlib images; `sheet_change` and `selection_change` events and self-write suppression; save, close and reopen with trust preserved; trust revocation after an outside edit; hang → automatic 30 s restart; numpy/pandas/matplotlib cold-load time inside Excel; 10,000-cell recalculation time; undo history after writes; Excel on Windows and on the web.
 
 ## 11. Delivery plan
 
@@ -187,9 +212,11 @@ On Excel for Mac (current channel), Windows (Microsoft 365) and the web:
 
 Exit: each item passes or has an accepted mitigation.
 
+Status on Excel for Mac (§10.1): items 1 and 2 (`XLFLY.CALL` only) pass; item 3 passes for trusting a workbook; item 4 passes for read, write and native chart; the rest are open. Windows and the web are not started.
+
 ### Phase 1 — Hardening (3–4 weeks)
 
-Progress indicator for kernel start; persistent kernel across task pane open/close; better editor (syntax highlighting); package selection per workbook; structured error display with tracebacks; telemetry-free diagnostics export.
+Clear error when `XLFLY.CALL` names a command rather than a function; a way to run a command without the task pane (ribbon button or keyboard shortcut); progress indicator for kernel start; persistent kernel across task pane open/close; better editor (syntax highlighting); package selection per workbook; structured error display with tracebacks; telemetry-free diagnostics export.
 
 ### Phase 2 — Chart lifecycle (4–6 weeks)
 
