@@ -31,6 +31,15 @@ Worksheet functions are synchronous and cannot touch the workbook (Excel forbids
 
 Requirements: Node.js 22+, Excel for Mac (Microsoft 365).
 
+One step:
+
+```bash
+npm run setup:mac   # install, fetch Python packages, certificate, build, sideload
+npm run serve       # keep running; then restart Excel
+```
+
+Or step by step:
+
 ```bash
 npm install
 npm run fetch:pyodide   # optional: self-host numpy, pandas, matplotlib (checksums verified)

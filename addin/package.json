@@ -13,7 +13,9 @@
     "certs": "office-addin-dev-certs install",
     "start": "npm run build && node scripts/serve.mjs",
     "sideload:mac": "bash scripts/sideload-mac.sh",
-    "validate": "office-addin-manifest validate dist/manifest.xml"
+    "validate": "office-addin-manifest validate dist/manifest.xml",
+    "setup:mac": "bash scripts/setup-mac.sh",
+    "serve": "node scripts/serve.mjs"
   },
   "license": "UNLICENSED",
   "devDependencies": {
