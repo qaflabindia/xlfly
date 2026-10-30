@@ -1,658 +1,462 @@
-# xlfly — Comprehensive Implementation Blueprint
+# xlfly — Implementation Blueprint (Revision 2)
 
-**Native Excel XLL · C++20 · Excel C API · Python Charting Engine · AAWDF Agentic Development**
+**Local Python runtime for Excel · Excel-DNA host (C#, .NET Framework 4.8.x) · Out-of-process CPython kernel · Two-way interoperability · Python charting**
 
-## Objective
+## Revision summary
 
-Build xlfly as an independently engineered, production-grade Excel charting and analytical add-in, using Microsoft’s documented native extension interfaces, a locally executed Python engine and our AI-agent development framework.
+Revision 1 proposed a hand-written C++20 XLL driving a standard-library-only Python charting worker, with execution of user Python explicitly out of scope. Revision 2 changes the product and the architecture:
 
-This blueprint covers system architecture, implementation contracts, native integration, chart rendering, build infrastructure, agent orchestration, security, testing, deployment and release governance.
+| Area | Revision 1 | Revision 2 |
+|---|---|---|
+| Product | Charting add-in | Local Python runtime for Excel; charting is one capability |
+| User Python | Non-goal | Core capability, under a macro-grade trust model |
+| Host | Hand-written C++20 XLL | Excel-DNA (forked, pinned), C#, .NET Framework 4.8.x |
+| Python | Standard library only | Embeddable CPython + numpy + pandas (pinned) |
+| Interop | Host → worker only | Symmetric RPC: Excel ↔ Python |
+| IPC | Named pipes | Anonymous pipes inherited at process creation |
+| Worker containment | Unspecified | Windows Job Object, kill-on-close |
+| Source binding | Fixed `$A$1` addresses | Hidden workbook-level defined names |
+| Chart output | SVG only | SVG, PNG fallback decided by spike |
+| Paid dependencies | — | None |
+| Plan | M0 build ceremony first | Phase 0 show-stopper sweep and spike first |
 
-**Primary architectural decision:** A native XLL with an **isolated CPython worker**, rather than Python embedded directly in Excel. The XLL controls Excel integration; Python controls analytical computation and rendering.
+Statements are marked where relevant as **[F]** fact, **[I]** inference, **[U]** unverified and to be confirmed in Phase 0.
 
-## 1. Product boundaries and engineering principles
+## 1. Product definition
 
-### Supported environment
+### 1.1 Positioning
 
-- Windows 11 x64 initially, with Windows 10 support subject to servicing and security status.
-- Microsoft Excel 64-bit desktop, initially Microsoft 365.
-- MSVC C++20, CMake and Windows SDK.
-- Microsoft Excel XLL SDK and documented Excel C API.
-- CPython 3.x, pinned to a tested minor version.
-- Local-only execution without a cloud service or third-party charting API.
+xlfly lets Excel users write Python that runs **locally**, reads and writes the workbook, and produces charts, without data leaving the machine and without a paid third-party runtime.
 
-The chart renderer will be our own implementation. Python’s standard library suffices for the initial SVG engine; optional numerical dependencies require explicit approval.
+Existing options and where xlfly differs:
 
-### Product capabilities
+- **Microsoft Python in Excel (`=PY`)** runs in a Microsoft cloud container with a curated package set; code cannot reach local files, databases or the network, and returns values only to its own cell [F, per Microsoft documentation and Q&A as of 2024; confirm current terms in Phase 0]. xlfly targets the cases it excludes: local or regulated data, offline use, custom packages, local system access, and workbook automation.
+- **PyXLL** is a mature in-process runtime but a paid, closed-source dependency. Rejected on vendor-dependency grounds.
+- **xlwings** (open-source core) drives Excel through COM and VBA for UDFs; weaker performance and robustness for a product runtime [I]. xlwings Lite runs Pyodide in the browser and cannot load arbitrary native packages [I].
 
-The first production release should support:
+Code written for xlfly should port to and from Microsoft `=PY` with minimal change: the same range-to-DataFrame conventions and figure-as-image output.
 
-1. Select Excel data, configure a chart and insert it into a workbook.
-2. Edit an existing xlfly chart without manually recreating it.
-3. Refresh charts when source data changes.
-4. Save, close and reopen a workbook while preserving chart output and configuration.
+### 1.2 Target user (to be confirmed — see §16)
 
-Initial chart catalogue: line, scatter, column, bar, histogram, box plot and heatmap. Advanced statistical and ML visualizations follow after core lifecycle stability.
+Windows Excel users in organisations that require local execution, custom Python packages, or Python-driven workbook automation.
 
-### Non-goals
+### 1.3 First production release capabilities
 
-We will not reverse-engineer Excel’s proprietary calculation engine, hook undocumented Excel functions, execute arbitrary Python expressions from worksheet cells, or claim that SVG images are natively editable Excel charts. Python-rendered charts are edited through xlfly, not Excel’s native chart-series editor.
+1. Python functions callable from cells (`@xlfly.func`).
+2. Python commands and event handlers that read and write the workbook (`@xlfly.command`, `@xlfly.on`).
+3. Python-rendered charts inserted, edited and refreshed in the workbook.
+4. Code stored in the workbook, optionally linked to external `.py` files.
+5. Save, close and reopen preserving code, chart definitions and outputs.
+6. Code execution gated by a trust model equivalent to or stricter than VBA macros.
 
-## 2. System decomposition
+### 1.4 Non-goals
 
-```text
-Excel Host
-  Workbook · Calculation · Selection · Shapes
-         |
-Native xlfly Host — C++20
-  XLL Lifecycle · C API Adapter · COM Adapter
-  Command Router · Chart Designer · Artifact Manager
-         |
-Native Execution Services
-  Job Scheduler · Worker Supervisor
-  Named-Pipe IPC · Protocol Validator
-         |
-xlfly Python Engine
-  Typed Data Model · Transformations · Statistical Kernel
-  Chart Geometry · Layout Engine · SVG Renderer
-         |
-Workbook Artifacts
-  Chart image · Source binding · Registry · Recovery state
-```
+- Mac, Excel on the web, and 32-bit Excel in the first release. Workbooks opened there show the last stored outputs and cannot recalculate xlfly functions.
+- Editing Python-rendered charts through Excel's native chart tools.
+- Installing packages from inside a cell or at run time.
+- Undocumented Excel hooks or reverse engineering.
 
-Excel and the Python worker are separate failure domains. A worker crash must not terminate Excel; an Excel crash must not leave a privileged or indefinitely running worker behind.
-
-## 3. Execution model and thread safety
-
-The Excel C API is host-provided and not an ordinary thread-safe library.
-
-- **Worksheet UDF execution:** Pure calculations returning Excel-compatible values. No workbook mutation, chart insertion or dialogs.
-- **XLL command execution:** Explicit user commands operating in permitted Excel contexts.
-- **COM workbook operations:** Workbook, worksheet and shape manipulation in a properly initialized and authorized Excel automation context.
-- **Python worker execution:** Data transformations, statistics and rendering, with no Excel API access.
-
-Worker completion uses a native queue and an Excel-safe dispatch mechanism. A Windows message alone does not authorize an Excel C API call. Dispatch must respect Excel readiness, reentrancy and the different constraints of C API versus COM operations.
-
-Official references:
-
-- [Programming with the C API in Excel](https://learn.microsoft.com/en-us/office/client-developer/excel/programming-with-the-c-api-in-excel)
-- [Multithreading and Memory Management](https://learn.microsoft.com/en-us/office/client-developer/excel/multithreading-and-memory-management)
-- [Asynchronous User-Defined Functions](https://learn.microsoft.com/en-us/office/client-developer/excel/asynchronous-user-defined-functions)
-
-Begin with explicit user-triggered commands and controlled completion processing. Automatic event-driven refresh follows later.
-
-## 4. Native host implementation
+## 2. Architecture
 
 ```text
-xlfly_xll
-  ├── xlfly_excel_api
-  ├── xlfly_excel_com
-  ├── xlfly_commands
-  ├── xlfly_execution
-  ├── xlfly_ipc
-  ├── xlfly_artifacts
-  └── xlfly_diagnostics
+Excel (64-bit, Microsoft 365, Windows)
+ └─ xlfly.xll — Excel-DNA host, C#, .NET Framework 4.8.x
+      Function registry · Command router · Event bridge
+      Main-thread dispatcher (QueueAsMacro) · Context guard
+      Trust manager · Code store · Chart artifact manager
+      Kernel supervisor · RPC endpoint
+        │  anonymous pipes (inherited handles), Job Object
+        ▼
+    xlfly kernel — embeddable CPython 3.x (pinned) + numpy + pandas
+      RPC endpoint · Module loader · Function/command registry
+      Type converters · User code sandbox boundary
+      Chart engine (geometry · layout · SVG/PNG)
 ```
 
-### XLL lifecycle
+Division of responsibility:
 
-- `xlAutoOpen`: Initialize add-in and register exported functions and commands.
-- `xlAutoClose`: Unregister where appropriate and release resources.
-- `xlAutoAdd` / `xlAutoRemove`: Optional installation/removal notifications.
-- `xlAutoFree12`: Release XLL-owned memory when Excel requests it.
-- `xlAddInManagerInfo12`: Optional Add-in Manager metadata.
+- **Host (C#):** everything that touches Excel — registration, COM and C API access, main-thread scheduling, Ribbon and task pane, trust decisions, workbook persistence, chart insertion.
+- **Kernel (Python):** everything users write and everything analytical — user modules, transforms, statistics, rendering. The kernel never touches Excel directly; all workbook access is an RPC to the host.
 
-Do not initialize Python, launch workers or perform substantial blocking work in `DllMain`.
+Excel and the kernel are separate failure domains. A kernel crash, hang or memory blow-up must not terminate Excel; Excel exiting must terminate the kernel.
 
-### Function registration
+### 2.1 Why Excel-DNA
 
-For M0 register:
+Excel-DNA packages .NET code as a standard `.xll` and already provides: function registration and runtime re-registration, memory and exception marshalling at the Excel boundary, asynchronous and streaming functions, main-thread scheduling (`ExcelAsyncUtil.QueueAsMacro`), COM object model access, Ribbon and custom task panes from the same add-in, and single-file packing [F, per Excel-DNA documentation].
 
-```excel
-=XLFLY.VERSION()
-```
+Licence: zlib, permissive, commercial use without fee [F]. Maintenance is active (1.9.0 release candidates in 2025; 1.10.0 Native AOT preview listed July 2026) [F, per NuGet listings; stable 2026 release unconfirmed].
 
-Return a stable version string via documented `xlfRegister` registration, with consistent calling conventions, argument types and return ownership. Register chart creation as an explicit command, not a worksheet UDF.
+Vendor risk control: fork Excel-DNA into the organisation, pin to a reviewed commit, build it from source in CI. The project then has no external party able to block it.
 
-### C++ memory management
+### 2.2 Why .NET Framework 4.8.x rather than modern .NET
 
-Use RAII wrappers distinguishing:
+- Only one modern .NET runtime can load into a process; an add-in built for one modern .NET major version cannot coexist in the same Excel instance with one built for another. .NET Framework add-ins coexist with whichever modern runtime is loaded [F, per Excel-DNA maintainers].
+- Modern .NET requires the Desktop Runtime to be installed; .NET Framework 4.8.x ships with Windows [F].
+- .NET 8 and 9 reach end of support on 10 November 2026; .NET 10 LTS runs to November 2028 [F]. Modern .NET would impose a forced runtime migration every 2–3 years.
+- The host is thin; computation runs in Python. Modern .NET performance gains do not matter here [I].
 
-- XLL-allocated memory.
-- Excel-allocated results freed through the appropriate Excel mechanism.
-- Static or borrowed memory that must not be freed.
-- Returned allocations requiring `xlAutoFree12`.
+Revisit only for managed enterprise estates where the runtime and co-installed add-ins are controlled.
 
-Every pointer crossing the Excel boundary must have a documented owner.
+### 2.3 Why an out-of-process kernel
 
-### Error handling
+- User code will hang, leak and crash in native extensions; a separate process can be killed and cannot take Excel down [I].
+- Cancellation is reliable (terminate the process); in-process Python threads cannot be safely aborted [F].
+- Excel's multithreaded recalculation and the Python GIL do not interact.
 
-No C++ exception may escape an exported Excel callback. Catch exceptions at the boundary, convert failures to valid Excel errors or controlled command failures, and log diagnostics. Reject oversized datasets before allocation and check dimension and byte-count arithmetic for overflow.
+Cost: per-call IPC latency. Mitigated by batching all xlfly function calls within one recalculation into a single round trip (§4.3). Latency budget to be measured in Phase 0.
 
-## 5. Python engine architecture
+### 2.4 Rejected alternatives
 
-```text
-xlfly-engine/
-  xlfly/
-    worker/
-      server.py
-      dispatcher.py
-      lifecycle.py
-    data/
-      types.py
-      validation.py
-      columnar.py
-      missing.py
-    transforms/
-      filter.py
-      group.py
-      aggregate.py
-      sort.py
-    statistics/
-      descriptive.py
-      correlation.py
-      regression.py
-      distributions.py
-    charts/
-      base.py
-      line.py
-      scatter.py
-      bar.py
-      histogram.py
-      boxplot.py
-      heatmap.py
-    geometry/
-      scales.py
-      coordinates.py
-      ticks.py
-      clipping.py
-    layout/
-      text.py
-      axes.py
-      legend.py
-      margins.py
-    rendering/
-      svg.py
-      styles.py
-      fonts.py
-      sanitize.py
-    persistence/
-      specifications.py
-      migrations.py
-```
+| Alternative | Reason rejected |
+|---|---|
+| Hand-written C++ XLL | Highest effort and risk; re-implements what Excel-DNA provides |
+| PyXLL | Paid, closed-source dependency |
+| xlwings classic | VBA/COM-based UDF path; product robustness and performance [I] |
+| Microsoft `=PY` only | Cloud execution; no local data, custom packages or workbook writes |
+| Office.js add-in | No local CPython without a local server; different product |
+| C#-only (no Python) | Fails the requirement that users write Python |
 
-### Engine contracts
+## 3. Execution contexts and threading
 
-A chart renderer receives validated data and a chart specification and returns an artifact without writing directly to Excel.
+### 3.1 Excel constraints [F]
+
+- A worksheet function may only return a value to its calling cell. It cannot write other cells, insert shapes or alter the workbook.
+- Workbook changes are permitted only in macro context: commands, Ribbon actions, or work scheduled through `QueueAsMacro`.
+- COM and C API calls must run on Excel's main thread.
+- Workbook changes made by code clear Excel's undo stack.
+
+### 3.2 xlfly contexts
+
+| Context | Entered by | Python may | Python may not |
+|---|---|---|---|
+| **Function** | Cell recalculation calling `@xlfly.func` | Compute from arguments; return a value or array | Any call back into Excel |
+| **Command** | Ribbon, `@xlfly.command`, event handler | Read and write ranges, call Excel functions, insert charts | Write to workbooks other than the originating one (default) |
+
+**Deadlock rule.** In function context Excel's calculation waits on Python. If Python requested main-thread work, both sides would wait forever. The host therefore rejects every kernel→host request carrying a function-context token, with a typed error. All function inputs must arrive as arguments, which also keeps Excel's dependency tracking correct. Read-only access to other ranges from functions is a possible later extension and must be documented as untracked by Excel.
+
+In command context, Python awaits each host request; the host executes it through `QueueAsMacro` when Excel is ready, keeping Excel responsive between calls.
+
+### 3.3 Dispatch rules
+
+- Separate kernel queues for function work and command work, so a long command never stalls recalculation and a write-triggered recalculation cannot deadlock against the running command.
+- Every RPC has a deadline. Excel busy (edit mode, modal dialog) delays queued work; Python sees a pending call, not an error, until the deadline.
+- xlfly suppresses its own change events while it writes, preventing event storms.
+- Workbook close cancels all jobs bound to that workbook and rejects their remaining callbacks.
+
+## 4. Two-way interoperability
+
+### 4.1 Excel → Python
+
+1. **Functions.** `@xlfly.func` registers a Python function as an Excel function. The host uses Excel-DNA runtime registration; module reload re-registers without restarting Excel.
+2. **Commands.** `@xlfly.command` exposes entry points to the Ribbon and to macros.
+3. **Events.** The host forwards workbook open/close, sheet change, calculation completed and selection events as notifications. `@xlfly.on("sheet_change")` subscribes.
+
+### 4.2 Python → Excel (command context only)
 
 ```python
-from dataclasses import dataclass
-from typing import Protocol
+import xlfly
 
+@xlfly.command
+def build_report():
+    df = xlfly.Range("Data!A1:D10000").to_frame(header=True)   # bulk read
+    out = summarise(df)
+    xlfly.Range("Report!A1").from_frame(out)                   # bulk write
+    xlfly.call("XLOOKUP", "key", xlfly.Range("T!A:A"), xlfly.Range("T!B:B"))
+    xlfly.chart(make_figure(out), anchor="Report!F2", chart_id="summary")
+```
+
+All transfers are bulk; the API offers no per-cell loop over RPC.
+
+### 4.3 Function batching
+
+During one recalculation the host collects pending xlfly function calls, sends them as one batch, and returns results through Excel-DNA's asynchronous function mechanism. Long-running functions return `#BUSY`-style pending state until complete [U: exact Excel presentation to be confirmed].
+
+### 4.4 Type mapping (single definition, both directions)
+
+| Excel | Python |
+|---|---|
+| Number | `float` |
+| Text | `str` |
+| Boolean | `bool` |
+| Empty | `None` |
+| Error (`#N/A`, `#DIV/0!`, …) | `xlfly.XLError` (never silent `NaN`) |
+| Date | `float` by default; `datetime` on request or by cell format, honouring 1900/1904 date systems |
+| Range | 2-D `list`, `numpy.ndarray` or `pandas.DataFrame` (explicit header option) |
+| Spilled result | Dynamic array |
+
+Converters are shared by functions and commands and covered by round-trip property tests.
+
+## 5. RPC protocol
+
+### 5.1 Transport
+
+- Anonymous pipes created by the host and inherited by the kernel at `CreateProcess`. No pipe name exists to squat [I].
+- Kernel placed in a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, plus memory limits.
+- Kernel launched by absolute path from the add-in directory, with a clean environment and Python isolated mode (`-I`), so `PYTHONPATH`, `PYTHONHOME` and `PYTHONSTARTUP` cannot inject code.
+
+### 5.2 Framing
+
+```text
+Header (little-endian):
+  magic            4 bytes  "XLFY"
+  protocol_major   uint16
+  protocol_minor   uint16
+  kind             uint16   REQUEST | RESPONSE | NOTIFICATION | CANCEL
+  flags            uint16
+  payload_length   uint32   bounded by negotiated maximum
+  message_id       uint64   unique per direction
+  context_token    16 bytes job and context (function | command)
+Payload:
+  UTF-8 JSON control body
+  optional typed binary blocks for bulk arrays (dtype, shape, bytes)
+```
+
+Model: symmetric RPC in the style of JSON-RPC 2.0 / Language Server Protocol. Either side may initiate requests.
+
+### 5.3 Methods
+
+Host → kernel: `hello`, `load_modules`, `call_functions` (batch), `run_command`, `event`, `render_chart`, `cancel`, `shutdown`.
+Kernel → host: `register_functions`, `range_read`, `range_write`, `excel_call`, `chart_insert`, `log`.
+
+Every request carries a deadline and maximum response size. Version negotiation in `hello` precedes any other message; incompatible majors refuse to communicate.
+
+### 5.4 Job state machine
+
+```text
+CREATED → VALIDATED → QUEUED → RUNNING → SUCCEEDED
+   │          │          │        ├──→ FAILED
+   └──────────┴──────────┴────────┴──→ CANCELLED | TIMED_OUT
+
+For chart and write jobs, after SUCCEEDED:
+RENDERED → COMMITTING → COMMITTED | ROLLED_BACK | ORPHANED
+```
+
+## 6. Code storage and calculation model
+
+### 6.1 Where code lives
+
+- **Embedded:** Python modules stored in a workbook custom XML part, so the workbook is self-contained.
+- **Linked:** workbook references external `.py` files for version control. Per-workbook choice, recorded in the part.
+
+### 6.2 Calculation model
+
+Release 1 uses **pure functions**: a cell's result depends only on its arguments; Excel's dependency graph drives recalculation. Module-level state is permitted but documented as invisible to Excel. An ordered notebook mode (as in Microsoft `=PY`) is deferred until pure-function behaviour is stable.
+
+### 6.3 Python environment
+
+- Embeddable CPython distribution, pinned minor version, shipped in the signed install directory.
+- numpy and pandas pinned; further packages added per deployment through a reviewed lock file.
+- No package installation from cells or at run time.
+
+## 7. Trust model
+
+Workbook-embedded code has macro-level power. Rules:
+
+1. Code execution is **off by default** for every workbook.
+2. Code runs only when the workbook is in a trusted location, signed by a trusted publisher, or explicitly trusted by the user after viewing the code summary.
+3. Files carrying Mark of the Web are never auto-trusted.
+4. Trust decisions are stored per user, keyed to workbook identity and code hash; any code change revokes trust.
+5. Commands write only to the originating workbook unless the user grants wider scope.
+6. Administrators can disable or restrict xlfly through policy registry keys.
+
+## 8. Charting
+
+### 8.1 Engine contract
+
+```python
 @dataclass(frozen=True)
 class ChartArtifact:
     chart_id: str
-    mime_type: str
+    mime_type: str        # image/svg+xml or image/png
     content: bytes
-    width: int
-    height: int
+    width_px: int
+    height_px: int
     sha256: str
-
-class ChartRenderer(Protocol):
-    def render(self, dataset, spec) -> ChartArtifact:
-        ...
 ```
 
-The renderer must be independent of the output host (Excel, PDF or another application).
+The engine receives validated data and a specification and returns an artifact; it never writes to Excel. Output format: SVG if Phase 0 confirms insertion, rendering fidelity and save/reopen behaviour [U]; otherwise PNG at 2× DPI. Text from cells is XML-escaped; SVG output additionally passes a sanitiser (no scripts, external resources, foreign objects or links).
 
-### Statistical kernel
-
-Separate data transformations from statistical calculations. Histogram binning policies: fixed count, fixed width, Sturges, Scott and Freedman–Diaconis. For regression, specify algorithm and numerical assumptions. QR-based least squares is preferable to unguarded normal equations for ill-conditioned data when an approved numerical library is available.
-
-### Rendering kernel
-
-Implement SVG layout, text measurement, clipping, tick generation, numeric formatting, legend placement and font fallback. For M2 use controlled fonts and deterministic parameters. A documented Windows text API may provide precise text measurement. Sanitize SVG: prohibit scripts, external resources, remote fonts, foreign objects and executable links.
-
-## 6. Data exchange protocol
-
-Use framed binary transport over Windows named pipes.
-
-```text
-Header:
-  magic             4 bytes
-  protocol_major    uint16
-  protocol_minor    uint16
-  message_type      uint16
-  flags             uint16
-  payload_length    uint64
-  request_id        16 bytes
-Payload:
-  UTF-8 JSON for control messages
-  Typed binary blocks for bulk data
-```
-
-Specify integer byte order explicitly; initial Windows-only protocol uses little-endian.
-
-Operations:
-
-- `HELLO`
-- `HEALTH_CHECK`
-- `RENDER_CHART`
-- `CANCEL_JOB`
-- `GET_CAPABILITIES`
-- `RENDER_RESULT`
-- `ERROR`
-- `SHUTDOWN`
-
-Every request carries correlation ID, protocol version, deadline and maximum response size. Never accept executable source code through the protocol.
-
-### Job state machine
-
-```text
-CREATED → VALIDATED → QUEUED → RUNNING
-                                  ├── SUCCEEDED
-                                  ├── FAILED
-                                  └── CANCELLED
-```
-
-Rendering success is distinct from workbook insertion success. A workbook may close, be protected or become busy before insertion. Track artifact commit status separately.
-
-## 7. Excel data acquisition
-
-For a selected range:
-
-1. Identify the Excel application and workbook instance.
-2. Resolve the active selection.
-3. Validate supported range shape.
-4. Read values in bulk.
-5. Preserve source metadata and Excel errors.
-6. Convert to xlfly’s typed data model.
-7. Release Excel-owned resources correctly.
-
-Prefer the Excel C API when it provides the necessary operation; use COM for other workbook operations. Never read live worksheet objects from an arbitrary background thread. Transfer an immutable snapshot to Python.
-
-### Data identity
-
-```json
-{
-  "source_kind": "excel_range",
-  "workbook_id": "wb-uuid",
-  "sheet_id": "sheet-uuid",
-  "address": "$A$1:$B$100",
-  "header_rows": 1,
-  "date_system": "1900",
-  "binding_mode": "fixed_range"
-}
-```
-
-For structured tables store table identity and column names; table bindings expand with new rows. For named ranges store name and scope.
-
-### Snapshot integrity
-
-Fingerprint canonical types, dimensions, missing values, values and chart-relevant metadata:
-
-\[
-H = \operatorname{SHA256}(\text{schema}\parallel\text{values}\parallel\text{specification})
-\]
-
-## 8. Chart lifecycle and persistence
+### 8.2 Chart definition and identity
 
 ```text
 ChartDefinition
-  chart_id
-  schema_version
-  workbook_identity
-  source_bindings
-  chart_type
-  transformations
-  axes
-  styles
-  layout
-  refresh_policy
-  last_render_hash
-  shape_identity
+  chart_id · schema_version · source_bindings · chart_type
+  transformations · axes · styles · layout
+  refresh_policy · last_render_hash · shape_identity
 ```
 
-Use workbook custom XML parts for metadata where supported, plus portable JSON export. Do not rely solely on shape names, which users can change. Attach a chart identifier to managed shapes through documented metadata properties where practical.
+- Stored in a workbook custom XML part.
+- Source bindings use **hidden workbook-level defined names**, which Excel adjusts on row/column insertion, deletion and sheet rename [F]. Structured tables bind by table and column name.
+- Workbook and sheet IDs are minted by xlfly and stored in the custom XML part; Excel provides no stable UUIDs [F].
+- Shapes carry the `chart_id` in documented shape metadata. **Duplicate IDs** (sheet copy, shape copy-paste) are detected on load and on refresh; the copy receives a new ID and a copied definition.
+- Missing sources are marked unresolved, never silently rebound.
 
-### Transactional replacement
+### 8.3 Fingerprint
 
-```text
-Capture source snapshot
-        ↓
-Render new artifact
-        ↓
-Validate file and checksum
-        ↓
-Insert temporary new shape
-        ↓
-Apply position and dimensions
-        ↓
-Update registry reference
-        ↓
-Remove previous shape
-        ↓
-Commit success
-```
+`H = SHA-256(len‖schema ‖ len‖values ‖ len‖spec)` with length-prefixed canonical encoding; `-0.0` normalised to `0.0`; NaN canonicalised; Excel errors and dates encoded by type tag; specification serialised with sorted keys.
 
-Preserve the previous chart if a pre-commit step fails. Excel COM does not guarantee workbook-wide atomicity; use a recovery journal and reconciliation. Missing sources are marked unresolved, never silently rebound.
+### 8.4 Transactional replacement
 
-## 9. Native user interface
+Render → validate artifact and checksum → insert new shape → apply position and size → update definition → remove old shape → commit. A recovery journal in the custom XML part records in-flight replacements; on load, incomplete replacements are reconciled (keep the valid shape, remove the orphan). Excel provides no workbook-wide atomicity [F].
 
-Initial Win32 chart designer sections:
+### 8.5 Undo
 
-- **Data:** Source ranges, X/Y series, categories, grouping.
-- **Chart:** Family and subtype.
-- **Axes:** Labels, bounds, scales, tick formatting.
-- **Style:** Fonts, colors, markers, lines, legend.
-- **Analysis:** Aggregation, trendline, confidence intervals when supported.
-- **Output:** Dimensions, location, export format, refresh policy.
+Insertion and refresh clear Excel's undo stack [F]. Release 1: refresh only on explicit command or opted-in policy; the first operation per session warns the user.
 
-Validate inputs before dispatch. A later native COM Ribbon companion can expose Ribbon extensibility and invoke the same command service as the XLL.
+## 9. User interface
+
+- Ribbon tab and custom task pane from the Excel-DNA add-in: code editor/module list, trust status, function list, chart designer, job and log view.
+- Chart designer sections: Data, Chart, Axes, Style, Analysis, Output.
+- No standalone Win32 dialogs.
 
 ## 10. Security model
 
-Native code running in Excel requires strong controls.
+Trust boundaries:
 
-### Trust boundaries
+1. **Workbook → host:** values, names, metadata and embedded code are untrusted until the trust manager admits them.
+2. **Host ↔ kernel:** every message validated for size, schema and context; function-context callbacks rejected.
+3. **Kernel → workbook:** writes scoped to the originating workbook; chart artifacts validated before insertion.
+4. **Installer/update → system:** signed packages, integrity verification.
 
-1. **Workbook → native host:** Treat values, formulas, names and metadata as untrusted.
-2. **Native host → worker:** Validate every protocol field and message size.
-3. **Worker → artifact manager:** Validate rendered files before Excel insertion.
-4. **Installer/update → system:** Verify package integrity and signatures.
+Distribution constraints:
 
-Run the worker with ordinary user privileges. Restrict named pipes to the current user and verify process identity as appropriate. Avoid unauthenticated localhost services. Never weaken Excel Trust Center settings automatically.
+- Microsoft 365 Excel blocks XLLs carrying Mark of the Web by default since 2023 [F]. Distribution uses managed deployment (Intune/SCCM) or a signed installer placing files in a trusted location.
+- XLLs are a known malware delivery format and are scrutinised by endpoint security [F]. All binaries — `xlfly.xll`, the Excel-DNA fork, the Python launcher — are code-signed.
 
-### Dependency policy
+Threat model statement: a malicious process running as the same user can tamper with a per-user install. That is out of scope; per-machine installation is offered where it is in scope.
 
-Pin versions, review licenses and vulnerabilities, and document purpose for every external dependency. Microsoft SDK, Windows SDK and CPython are platform dependencies; numerical libraries are optional and do not imply third-party cloud APIs.
+Dependency policy: Excel-DNA (fork), CPython, numpy, pandas — pinned, licence-reviewed (zlib, PSF, BSD), vulnerability-scanned. No paid or closed-source runtime dependencies.
 
-## 11. Build and CI/CD system
-
-### Build environment
-
-- Visual Studio Build Tools / MSVC x64.
-- Windows SDK.
-- CMake and Ninja.
-- Microsoft Excel XLL SDK.
-- CPython and standard library.
-- GitHub Actions Windows runners or equivalent CI.
-
-### Native build targets
+## 11. Repository layout
 
 ```text
-xlfly_core
-xlfly_excel_api
-xlfly_ipc
-xlfly_worker_supervisor
-xlfly_artifact_manager
-xlfly_xll
-xlfly_native_tests
+host/
+  Xlfly.Host/             C# Excel-DNA add-in
+  Xlfly.Host.Tests/       unit tests (no Excel)
+kernel/
+  xlfly/                  public Python API for users
+  xlfly_kernel/           RPC server, loader, converters, chart engine
+  tests/
+protocol/
+  schemas/                message schemas, version history
+  conformance/            cross-language contract tests
+third_party/
+  exceldna/               pinned fork (submodule)
+tests/excel/              Excel-hosted integration tests
+installer/
+docs/
 ```
 
-Pass Excel SDK paths through CMake configuration, not hard-coded machine paths. Build presets define architecture, compiler, SDK location, optimization and output directory.
-
-### CI pipeline
-
-1. Source validation — formatting, linting, dependencies.
-2. Native build — CMake configure, compile and link.
-3. Python tests — data, statistics, renderer.
-4. Protocol tests — framing, schema, compatibility.
-5. Security checks — static analysis, fuzzing, dependency audit.
-6. Packaging — worker bundle, XLL, installer.
-7. Integration tests — Excel-hosted tests on controlled Windows machines.
-
-Compilation and standalone tests can run without Excel installed. Excel integration testing requires licensed Excel and an interactive desktop; do not assume hosted CI includes it.
-
-## 12. Test strategy
-
-- **Unit:** Geometry, statistics, formatting, serialization, native utilities.
-- **Contract:** C++/Python agreement on framing, types, versions and errors.
-- **Integration:** XLL load, registration, extraction, rendering, shape insertion.
-- **Recovery:** Worker crashes, timeouts, workbook closure, protection, invalid SVG, interrupted replacement.
-- **Compatibility:** Supported Microsoft 365 builds, update channels, Windows configurations, DPI and locale.
-
-### Numerical validation
+## 12. Build and CI
 
-Compare calculations with independent reference values and use property-based tests.
-
-For nonconstant valid `X`:
+- Build: .NET SDK / MSBuild targeting `net48`, Excel-DNA fork built from source, CPython embeddable distribution, pinned wheels.
+- CI stages: lint and format → host build and unit tests → kernel tests → protocol conformance (C# ↔ Python) → security (static analysis, protocol fuzzing, dependency audit) → packaging and signing → Excel-hosted integration tests.
+- Excel-hosted tests require licensed Excel on an interactive desktop; hosted CI does not provide this [F]. A dedicated, human-maintained Windows machine or self-hosted runner is provisioned in Phase 0.
 
-\[
-\operatorname{corr}(X,X)=1
-\]
+## 13. Test strategy
 
-For histogram bins covering all valid observations:
-
-\[
-\sum_i n_i=N
-\]
-
-Compare normalized SVG geometry and semantic properties, not just pixels.
-
-### Performance
-
-\[
-T_{\text{total}}=T_{\text{read}}+T_{\text{serialize}}+T_{\text{IPC}}+T_{\text{compute}}+T_{\text{render}}+T_{\text{insert}}
-\]
-
-Measure peak memory and Excel responsiveness alongside latency. Set targets after a baseline prototype; do not promise million-point subsecond performance without evidence.
-
-## 13. AAWDF — AI-agent implementation framework
-
-Four governance roles:
-
-1. **Registrar:** Create work items, assign IDs, record requirements and dependencies.
-2. **Receiver:** Retrieve specifications, verify Microsoft documentation, define acceptance tests.
-3. **Maker:** Implement source, documentation, tests and build artifacts.
-4. **Checker:** Independently review, test and verify evidence.
-
-### Specialist engineering agents
-
-- **ARCH:** Architecture, interfaces, ADRs.
-- **XLL:** Excel C API, registration, lifecycle, native memory.
-- **COM:** Workbook automation, shapes, insertion.
-- **IPC:** Named pipes, supervision, protocol.
-- **PY:** Data, transforms, statistics.
-- **SVG:** Geometry, layout, renderers, exports.
-- **UI:** Native designer and Ribbon.
-- **QA:** Unit, integration, recovery, performance.
-- **SEC:** Security, dependencies, hardening.
-- **REL:** Build, packaging, signing, releases.
+- **Unit:** converters, geometry, statistics, protocol framing, trust decisions.
+- **Contract:** C# and Python agree on framing, types, versions and errors.
+- **Property:** type round-trips; `corr(X, X) = 1` for nonconstant X; histogram bin counts sum to N.
+- **Integration (real Excel):** load/unload, registration, function batching, command writes, events, chart insertion, save/reopen.
+- **Concurrency:** function-context callback rejected; write-triggered recalculation; workbook closed mid-command; Excel busy.
+- **Recovery:** kernel crash, hang and kill; interrupted chart replacement; corrupted custom XML part.
+- **Compatibility:** supported Microsoft 365 channels, DPI, locale, co-installed add-ins on modern .NET.
+- **Performance:** `T = T_read + T_serialize + T_ipc + T_compute + T_render + T_insert`, plus peak memory and Excel responsiveness. Targets set after Phase 0 baselines.
 
-Maker and Checker must be independent.
+## 14. Delivery plan
 
-### Agent task specification
+### Phase 0 — Show-stopper sweep and spike (2 weeks)
 
-```yaml
-task_id: XLFLY-M0-001
-title: Implement native XLL lifecycle
-owner: XLL
-checker: QA
-inputs:
-  - docs/architecture/xll-lifecycle.md
-  - docs/contracts/native-host.md
-allowed_paths:
-  - native/xll/**
-  - tests/native/**
-acceptance:
-  - xlAutoOpen exported
-  - xlAutoClose exported
-  - x64 compilation succeeds
-  - no exception escapes callbacks
-  - lifecycle tests pass
-evidence:
-  - compiler_log
-  - test_report
-  - changed_files
-  - source_revision
-merge_policy:
-  independent_checker: required
-  human_approval: required
-```
+Spike: Excel-DNA `=XLFLY.PY(code, range)` → out-of-process kernel → DataFrame result; one command writing a range and inserting a chart; save/reopen.
 
-File ownership reduces conflicts between parallel agents.
+Show-stopper register — each item green or covered by an accepted fallback before Phase 1:
 
-### Execution ledger
+| # | Risk | Test | Mitigation / fallback |
+|---|---|---|---|
+| 1 | IT policy blocks add-in; Mark of the Web | Install on locked-down image | Signing, managed deployment, trusted location |
+| 2 | Endpoint security quarantine | Defender and customer EDR | Signing, vendor submissions, embeddable CPython not PyInstaller |
+| 3 | Mac/web required | User inventory | Out of scope, or Microsoft `=PY` for those users |
+| 4 | 32-bit Excel present | User inventory | x86 build or explicit exclusion |
+| 5 | No admin rights | Install as standard user | Per-user install and registration |
+| 6 | Data residency | Compliance review | Determines whether `=PY` is a fallback |
+| 7 | Modern .NET add-in conflict | Co-install test | .NET Framework host (by design) |
+| 8 | SVG fidelity/persistence | Spike | PNG at 2× DPI |
+| 9 | IPC latency | 10,000-cell batched recalculation | Batching, size limits |
+| 10 | Deadlock / reentrancy | Function callback, write-triggered recalc | Context guard, separate queues |
 
-```text
-STARTED
-INPUT_HASHED
-TOOL_USE
-DECISION
-HUMAN_REVIEW
-FINALIZED
-```
+Exit: register resolved; architecture confirmed or amended; plan re-estimated.
 
-Record role, task ID, revision, tool, outcome and artifact hashes; exclude secrets and sensitive workbook contents.
+### Phase 1 — Foundations (3–4 weeks)
 
-### Agent authority
+Host skeleton, kernel supervisor, Job Object, anonymous-pipe RPC, version negotiation, type converters, `@xlfly.func` with batching, diagnostics.
+Exit: functions return correct values in real Excel; kernel crash leaves Excel running; contract tests pass.
 
-Agents may implement, compile, test, refactor and open pull requests within assigned boundaries. Architecture changes, protocol major versions, new dependencies, releases and protected-branch changes require human approval.
+### Phase 2 — Two-way interop (4–6 weeks)
 
-Checker evidence states:
+Commands, events, Range API, `excel_call`, context guard, code store (embedded and linked), trust manager.
+Exit: §3 and §4 behaviours verified in real Excel, including deadlock and cancellation tests; untrusted code never runs.
 
-- **Verified:** Executed with recorded evidence.
-- **Reviewed:** Examined without complete runtime verification.
-- **Unverified:** Insufficient evidence.
+### Phase 3 — Charting and persistence (4–6 weeks)
 
-## 14. Dependency-driven development plan
+Chart engine (scatter first), artifact manager, defined-name bindings, duplicate-ID handling, transactional replacement, recovery journal.
+Exit: create, edit, refresh and save/reopen without identity loss or orphaned shapes.
 
-```text
-M0 — Foundation and Contracts
-    Repository · CMake · SDK · Architecture · Protocol
-              ↓
-    ┌───────────────────────────┐
-    │ M1A — Native Host         │
-    │ M1B — Python Engine       │
-    └───────────────────────────┘
-              ↓
-M2 — End-to-End Integration
-    Selected range → Python → Excel chart
-              ↓
-M3 — Persistence and Refresh
-              ↓
-M4 — Chart Catalogue and Designer
-              ↓
-M5 — Security, Compatibility and Release
-```
+### Phase 4 — Catalogue and UI (3–5 weeks)
 
-### M0 — Foundation
+Chart types prioritised by the differentiator in §1, task pane, chart designer.
+Exit: numerical, geometry and integration tests pass per chart type.
 
-Deliver reproducible x64 build, pinned SDK, source layout, ADRs, protocol schema and tests.
+### Phase 5 — Release (4–6 weeks)
 
-**Exit gate:** Clean build in documented Windows environment.
+Installer, signing, policy keys, documentation, compatibility matrix.
+Exit: reproducible, signed release candidate validated on supported Excel.
 
-### M1 — Native and Python foundations
+Planning total: approximately 20–29 weeks after Phase 0. These are estimates, not measurements; re-estimate at the Phase 0 exit.
 
-Native: lifecycle, `XLFLY.VERSION()`, registration, diagnostics, worker launcher. Python: typed data, worker protocol, scatter geometry, SVG.
+## 15. Engineering governance
 
-**Exit gate:** Native compilation, deterministic SVG and IPC contract tests pass.
+- Each task has a Maker, an independent Checker and acceptance criteria with recorded evidence.
+- Agents may implement, test, refactor and open pull requests within assigned paths. Architecture, protocol major versions, new dependencies, trust-model changes and releases require human approval.
+- Any task touching Excel behaviour is **Verified** only with evidence from a real Excel run; otherwise it is **Reviewed** or **Unverified**.
+- Ledger records task, revision, outcome and artifact hashes; never workbook contents or secrets.
 
-### M2 — First complete chart
+## 16. Open decisions
 
-Command reads two numeric columns and creates a scatter chart in Excel.
+1. Internal use only, or sold to external customers?
+2. Any requirement for Mac or Excel on the web?
+3. Are target machines centrally managed and locked down?
+4. May workbook data be processed in Microsoft's cloud?
+5. Which analyses or charts form the differentiator that orders Phase 4?
 
-**Exit gate:** Real Excel insertion and persistence across save/reopen.
+## 17. Failure modes
 
-### M3 — Chart management
+| Failure | Response |
+|---|---|
+| Kernel crash or hang | Job Object isolation, restart, typed cell errors, command failure report |
+| Function-context callback | Rejected with typed error |
+| Excel busy or modal | Queued work waits until deadline |
+| Workbook closed mid-job | Cancel job, reject callbacks, discard results |
+| Untrusted or modified code | Not executed; trust revoked on code change |
+| Source deleted or moved | Defined name adjusts; deletion marks binding unresolved |
+| Duplicate chart ID | Reassign ID on copy |
+| Interrupted chart replacement | Recovery journal reconciliation |
+| Protected sheet | Detect and report |
+| Protocol mismatch | Refuse communication |
+| Add-in blocked by policy or Mark of the Web | Diagnostic message with deployment guidance |
+| Event storm from own writes | Suppression during writes |
 
-Chart IDs, metadata, source rebinding, manual refresh, replacement and recovery.
+## 18. Production readiness
 
-**Exit gate:** Edit and refresh without identity loss or workbook corruption.
-
-### M4 — Chart catalogue
-
-Line, column, bar, histogram, box plot, heatmap; chart designer and validation.
-
-**Exit gate:** Numerical, geometry and integration tests pass for every type.
-
-### M5 — Product release
-
-Packaging, signing, installation, diagnostics, compatibility and recovery.
-
-**Exit gate:** Reproducible release candidate validated on supported Excel.
-
-## 15. Estimated engineering effort
-
-Planning estimates, not measured durations:
-
-- M0 — Foundation: **2–3 weeks**.
-- M1 — Native and Python foundations: **3–5 weeks**.
-- M2 — End-to-end chart: **3–4 weeks**.
-- M3 — Persistence and refresh: **3–5 weeks**.
-- M4 — Catalogue and designer: **5–8 weeks**.
-- M5 — Hardening and release: **4–6 weeks**.
-
-Sequential total: **approximately 20–31 engineering weeks**. Parallel agents may reduce elapsed time, but integration, review and Excel-hosted testing remain. Native Excel integration and workbook artifact lifecycle present the greatest schedule uncertainty.
-
-## 16. Release engineering
-
-```text
-xlfly-release/
-├── xlfly.xll
-├── xlfly-engine.exe
-├── runtime/
-├── resources/
-├── schemas/
-├── licenses/
-├── manifest.json
-└── installer/
-```
-
-Installer requirements:
-
-1. Detect Windows and Excel architecture.
-2. Verify package integrity.
-3. Install binaries in controlled location.
-4. Register add-in through supported Excel mechanisms.
-5. Preserve existing workbook content.
-6. Support clean uninstall and repair.
-
-Sign native binaries and installer. Do not silently change Trust Center policies.
-
-### Versioning
-
-```text
-Product:       0.1.0
-XLL:           0.1.0
-Engine:        0.1.0
-IPC:           1.0
-Chart schema:  1.0
-```
-
-Negotiate XLL/worker protocol compatibility before jobs.
-
-## 17. Principal failure modes
-
-- **XLL initialization failure:** Safe load failure and diagnostics.
-- **Worker crash:** Isolation, restart, job failure reporting.
-- **Excel busy/modal:** Controlled retry or deferred insertion.
-- **Workbook closed:** Cancel or discard stale result.
-- **Source deleted:** Mark binding unresolved.
-- **Protected worksheet:** Detect and report insertion restriction.
-- **Invalid SVG:** Reject before insertion.
-- **Protocol mismatch:** Refuse incompatible communication.
-- **Memory leak:** Ownership tests and allocation instrumentation.
-- **Corrupted registry:** Recover last valid metadata.
-- **Multiple Excel instances:** Explicit instance/workbook identity.
-- **Untrusted input:** Validation, size limits, no code execution.
-
-Each failure mode requires automated testing where practical and a recovery procedure.
-
-## 18. Definition of production readiness
-
-- [ ] XLL loads/unloads reliably on supported Excel builds.
-- [ ] Registered worksheet functions return correct values.
-- [ ] Python worker starts, communicates and shuts down correctly.
-- [ ] Chart creation handles valid and invalid data.
-- [ ] Charts survive workbook save/reopen.
-- [ ] Refresh avoids duplicate/orphaned shapes.
-- [ ] Worker failure does not terminate Excel.
-- [ ] Protocol and schema migrations tested.
-- [ ] Installation/uninstallation repeatable.
-- [ ] Release binaries signed and traceable to revisions.
-- [ ] Independent Checker evidence recorded.
+- [ ] Add-in loads and unloads reliably on supported builds, alongside modern .NET add-ins.
+- [ ] Python functions return correct values; batching meets measured targets.
+- [ ] Commands and events read and write correctly; deadlock tests pass.
+- [ ] Untrusted code never executes.
+- [ ] Kernel failure never terminates Excel; Excel exit always terminates the kernel.
+- [ ] Charts survive save/reopen; refresh leaves no duplicate or orphaned shapes.
+- [ ] Protocol and workbook schema migrations tested.
+- [ ] Installation, repair and uninstallation repeatable without admin rights.
+- [ ] All binaries signed and traceable to source revisions.
 - [ ] User documentation and diagnostics complete.
 
 ## 19. Documentation package
@@ -661,52 +465,39 @@ Each failure mode requires automated testing where practical and a recovery proc
 docs/
   00-product-requirements.md
   01-system-architecture.md
-  02-excel-c-api-contracts.md
-  03-xll-lifecycle.md
-  04-memory-ownership.md
-  05-threading-and-com.md
-  06-ipc-protocol.md
-  07-data-model.md
-  08-python-engine.md
-  09-svg-renderer.md
-  10-chart-registry.md
-  11-workbook-lifecycle.md
-  12-security-model.md
-  13-test-strategy.md
-  14-build-and-release.md
-  15-agent-governance.md
-  16-operations-and-recovery.md
+  02-adr-host-and-runtime.md
+  03-execution-contexts.md
+  04-rpc-protocol.md
+  05-type-mapping.md
+  06-calculation-model.md
+  07-trust-model.md
+  08-python-api.md
+  09-chart-engine.md
+  10-workbook-persistence.md
+  11-security-model.md
+  12-test-strategy.md
+  13-build-and-release.md
+  14-governance.md
+  15-operations-and-recovery.md
 ```
 
-Official Microsoft references:
+## 20. References
 
-- [Developing Excel XLLs](https://learn.microsoft.com/en-us/office/client-developer/excel/developing-excel-xlls)
-- [Creating XLLs](https://learn.microsoft.com/en-us/office/client-developer/excel/creating-xlls)
-- [Data Types Used by Excel](https://learn.microsoft.com/en-us/office/client-developer/excel/data-types-used-by-excel)
-- [Multithreaded Recalculation](https://learn.microsoft.com/en-us/office/client-developer/excel/multithreaded-recalculation-in-excel)
+- [Excel-DNA](https://github.com/Excel-DNA/ExcelDna) · [Excel-DNA licence (zlib)](https://github.com/Excel-DNA/Registration/blob/dc599090c480733046b4c0a266b65502cddfeeb9/LICENSE.txt)
+- [Programming with the C API in Excel](https://learn.microsoft.com/en-us/office/client-developer/excel/programming-with-the-c-api-in-excel)
 - [Asynchronous User-Defined Functions](https://learn.microsoft.com/en-us/office/client-developer/excel/asynchronous-user-defined-functions)
-- [xlAutoOpen](https://learn.microsoft.com/en-us/office/client-developer/excel/xlautoopen)
+- [Microsoft PY function](https://support.microsoft.com/en-US/Excel/python/py-function)
+- [.NET 8 and .NET 9 end of support](https://devblogs.microsoft.com/dotnet/dotnet-8-9-end-of-support/)
+- [Excel blocks internet-sourced XLL add-ins](https://office-watch.com/2023/microsoft-block-excel-xll-add-ins/)
 
-## 20. Implementation directive for the agent team
+## 21. Directive
 
-### Initial engineering order — XLFLY-M0
-
-Establish the xlfly repository as a native C++20 Excel XLL project with an independently executable Python engine.
-
-Freeze architecture contracts, implement reproducible build system, register `XLFLY.VERSION()`, establish named-pipe protocol and create automated contract tests.
-
-Every task must have a Maker, independent Checker, acceptance criteria and reproducible evidence.
-
-**Do not begin workbook chart insertion until native lifecycle and worker communication gates have passed.**
-
-### Final architectural position
-
-xlfly is an Excel-native extension platform with a proprietary Python analytical and visualization engine. The XLL provides host integration; the worker provides isolated computation; the workbook artifact manager provides persistent chart lifecycle management.
+Begin with Phase 0. No product code is written until every show-stopper in §14 is green or covered by an accepted fallback.
 
 The first critical transaction is:
 
-\[
-\boxed{\text{Excel Range}\rightarrow\text{Native XLL}\rightarrow\text{Python Engine}\rightarrow\text{SVG}\rightarrow\text{Excel Shape}}
-\]
+```text
+Excel cell → Excel-DNA host → Python kernel → result or chart → Excel
+```
 
-Once this transaction is reliable, extensible and recoverable, additional chart families become independent engineering modules rather than changes to the core architecture.
+Once it is reliable in both directions, recoverable and governed by the trust model, further functions and chart types are modules, not architecture changes.
