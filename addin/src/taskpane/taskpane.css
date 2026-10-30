@@ -55,6 +55,8 @@ h2 { font-size: 13px; margin: 0 0 6px; }
 
 .row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .row h2 { margin: 0; flex: 1; }
+.row input { flex: 1; min-width: 0; }
+[hidden] { display: none !important; }
 
 textarea {
   width: 100%;
@@ -69,7 +71,7 @@ textarea {
   tab-size: 4;
 }
 
-button, select {
+button, select, input {
   font: inherit;
   padding: 4px 10px;
   border: 1px solid var(--line);

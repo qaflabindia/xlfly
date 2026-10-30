@@ -29,6 +29,8 @@ export function bindTaskpane(app: App, root: HTMLElement): void {
   const saveButton = $<HTMLButtonElement>("save-button");
   const newButton = $<HTMLButtonElement>("new-module");
   const deleteButton = $<HTMLButtonElement>("delete-module");
+  const newForm = $<HTMLFormElement>("new-module-form");
+  const newName = $<HTMLInputElement>("new-module-name");
   const functions = $("functions");
   const commands = $("commands");
   const log = $("log");
@@ -115,13 +117,28 @@ export function bindTaskpane(app: App, root: HTMLElement): void {
       dirty = true;
     }
   };
+  // window.prompt() is unavailable in Office add-in web views, so the name is asked for inline.
   newButton.onclick = () => {
-    const name = prompt("Module name (a Python identifier):", `module${drafts.length + 1}`);
-    if (!name) return;
+    newForm.hidden = false;
+    newName.value = `module${drafts.length + 1}`;
+    newName.focus();
+    newName.select();
+  };
+  $("new-module-cancel").onclick = () => {
+    newForm.hidden = true;
+  };
+  newName.onkeydown = (event) => {
+    if (event.key === "Escape") newForm.hidden = true;
+  };
+  newForm.onsubmit = (event) => {
+    event.preventDefault();
+    const name = newName.value.trim();
     if (!/^[A-Za-z_]\w*$/.test(name) || drafts.some((m) => m.name === name)) {
       app.log(`invalid or duplicate module name: ${name}`);
+      newName.focus();
       return;
     }
+    newForm.hidden = true;
     drafts[selected].source = editor.value;
     drafts.push({ name, source: "import xlfly\n" });
     selected = drafts.length - 1;

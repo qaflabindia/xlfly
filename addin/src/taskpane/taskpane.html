@@ -27,6 +27,11 @@
         <button id="new-module">New</button>
         <button id="delete-module">Delete</button>
       </div>
+      <form id="new-module-form" class="row" hidden>
+        <input id="new-module-name" aria-label="New module name" placeholder="Module name (a Python identifier)" autocomplete="off" spellcheck="false">
+        <button type="submit">Add</button>
+        <button type="button" id="new-module-cancel">Cancel</button>
+      </form>
       <textarea id="editor" spellcheck="false" aria-label="Python source"></textarea>
       <button id="save-button" class="primary">Save to workbook and reload</button>
     </section>
