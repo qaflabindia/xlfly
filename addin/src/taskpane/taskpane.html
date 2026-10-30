@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>xlfly</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <link rel="stylesheet" href="taskpane.css">
+</head>
+<body>
+  <main id="xlfly-root">
+    <header>
+      <h1>xlfly <small id="version"></small></h1>
+      <span id="kernel-status" data-state="stopped">stopped</span>
+      <button id="restart-button" title="Restart the Python kernel">Restart</button>
+    </header>
+
+    <section id="trust" data-trusted="false">
+      <p id="trust-text"></p>
+      <button id="trust-button"></button>
+    </section>
+
+    <section>
+      <div class="row">
+        <h2>Modules</h2>
+        <select id="module-select" aria-label="Module"></select>
+        <button id="new-module">New</button>
+        <button id="delete-module">Delete</button>
+      </div>
+      <form id="new-module-form" class="row" hidden>
+        <input id="new-module-name" aria-label="New module name" placeholder="Module name (a Python identifier)" autocomplete="off" spellcheck="false">
+        <button type="submit">Add</button>
+        <button type="button" id="new-module-cancel">Cancel</button>
+      </form>
+      <textarea id="editor" spellcheck="false" aria-label="Python source"></textarea>
+      <button id="save-button" class="primary">Save to workbook and reload</button>
+    </section>
+
+    <section>
+      <h2>Functions</h2>
+      <p class="hint">Evaluate inline code with <code>=XLFLY.PY("arg1 * 2", A1)</code>.</p>
+      <ul id="functions"></ul>
+      <h2>Commands</h2>
+      <ul id="commands"></ul>
+    </section>
+
+    <section>
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

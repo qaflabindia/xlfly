@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- xlfly Office Add-in manifest. {{BASE_URL}} is replaced at build time (XLFLY_BASE_URL, default https://localhost:3000). -->
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+           xsi:type="TaskPaneApp">
+  <Id>6f1c2b8e-4d3a-4f5e-9b7c-2a1d0e9f8c71</Id>
+  <Version>0.1.0.0</Version>
+  <ProviderName>QAF Lab</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="xlfly"/>
+  <Description DefaultValue="Local Python for Excel: worksheet functions, commands and charts, running on your computer."/>
+  <IconUrl DefaultValue="{{BASE_URL}}/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="{{BASE_URL}}/assets/icon-64.png"/>
+  <SupportUrl DefaultValue="https://github.com/qaflabindia/xlfly"/>
+  <AppDomains>
+    <AppDomain>{{BASE_URL}}</AppDomain>
+  </AppDomains>
+  <Hosts>
+    <Host Name="Workbook"/>
+  </Hosts>
+  <Requirements>
+    <Sets DefaultMinVersion="1.1">
+      <Set Name="SharedRuntime" MinVersion="1.1"/>
+    </Sets>
+  </Requirements>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="{{BASE_URL}}/taskpane.html"/>
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Workbook">
+        <Runtimes>
+          <Runtime resid="Taskpane.Url" lifetime="long"/>
+        </Runtimes>
+        <AllFormFactors>
+          <ExtensionPoint xsi:type="CustomFunctions">
+            <Script>
+              <SourceLocation resid="Functions.Script.Url"/>
+            </Script>
+            <Page>
+              <SourceLocation resid="Taskpane.Url"/>
+            </Page>
+            <Metadata>
+              <SourceLocation resid="Functions.Metadata.Url"/>
+            </Metadata>
+            <Namespace resid="Functions.Namespace"/>
+          </ExtensionPoint>
+        </AllFormFactors>
+        <DesktopFormFactor>
+          <GetStarted>
+            <Title resid="GetStarted.Title"/>
+            <Description resid="GetStarted.Description"/>
+            <LearnMoreUrl resid="LearnMore.Url"/>
+          </GetStarted>
+          <FunctionFile resid="Taskpane.Url"/>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="Xlfly.Group">
+                <Label resid="Group.Label"/>
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16"/>
+                  <bt:Image size="32" resid="Icon.32"/>
+                  <bt:Image size="80" resid="Icon.80"/>
+                </Icon>
+                <Control xsi:type="Button" id="Xlfly.TaskpaneButton">
+                  <Label resid="Button.Label"/>
+                  <Supertip>
+                    <Title resid="Button.Label"/>
+                    <Description resid="Button.Tooltip"/>
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16"/>
+                    <bt:Image size="32" resid="Icon.32"/>
+                    <bt:Image size="80" resid="Icon.80"/>
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>Xlfly.Taskpane</TaskpaneId>
+                    <SourceLocation resid="Taskpane.Url"/>
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16" DefaultValue="{{BASE_URL}}/assets/icon-16.png"/>
+        <bt:Image id="Icon.32" DefaultValue="{{BASE_URL}}/assets/icon-32.png"/>
+        <bt:Image id="Icon.80" DefaultValue="{{BASE_URL}}/assets/icon-80.png"/>
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Functions.Script.Url" DefaultValue="{{BASE_URL}}/app.js"/>
+        <bt:Url id="Functions.Metadata.Url" DefaultValue="{{BASE_URL}}/functions.json"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="{{BASE_URL}}/taskpane.html"/>
+        <bt:Url id="LearnMore.Url" DefaultValue="https://github.com/qaflabindia/xlfly"/>
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Functions.Namespace" DefaultValue="XLFLY"/>
+        <bt:String id="GetStarted.Title" DefaultValue="xlfly is ready"/>
+        <bt:String id="Group.Label" DefaultValue="xlfly"/>
+        <bt:String id="Button.Label" DefaultValue="Python"/>
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="GetStarted.Description" DefaultValue="Open the xlfly pane from the Home tab to write Python for this workbook."/>
+        <bt:String id="Button.Tooltip" DefaultValue="Open the xlfly Python pane."/>
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>
